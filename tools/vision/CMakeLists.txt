@@ -24,10 +24,17 @@ project(strata_vision C CXX)
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on an NVIDIA GPU (builds ggml-cuda)" OFF)
 option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip)" OFF)
+option(STRATA_VISION_VULKAN "run the vision encoder on the GPU through Vulkan (builds ggml-vulkan; AMD, any vendor)" OFF)
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
-if(STRATA_VISION_CUDA AND STRATA_VISION_HIP)
-  message(FATAL_ERROR "STRATA_VISION_CUDA and STRATA_VISION_HIP are both on: one GPU backend per build "
-                      "(as in the engine's CMakeLists.txt, docs/AMD_HIP.md)")
+set(STRATA_VISION_GPU_COUNT 0)
+foreach(_b STRATA_VISION_CUDA STRATA_VISION_HIP STRATA_VISION_VULKAN)
+  if(${_b})
+    math(EXPR STRATA_VISION_GPU_COUNT "${STRATA_VISION_GPU_COUNT} + 1")
+  endif()
+endforeach()
+if(STRATA_VISION_GPU_COUNT GREATER 1)
+  message(FATAL_ERROR "more than one GPU backend is on (STRATA_VISION_CUDA / _HIP / _VULKAN): one GPU backend per "
+                      "build (as in the engine's CMakeLists.txt, docs/AMD_HIP.md)")
 endif()
 if(STRATA_PORTABLE AND MSVC AND NOT STRATA_VISION_HIP)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -77,6 +84,7 @@ endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
 set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
+set(GGML_VULKAN ${STRATA_VISION_VULKAN} CACHE BOOL "" FORCE)
 
 # ---- the AMD path: ggml-cuda's sources compiled by ROCm's clang for the card in this PC -------------------------
 #
