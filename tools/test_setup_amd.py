@@ -6,6 +6,7 @@ which TheRock index each family installs from.  No GPU, no ROCm, no downloads.
 """
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 import unittest
@@ -430,12 +431,44 @@ class CalibrationKey(unittest.TestCase):
 
 
 class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
+    """#1299: an AMD card on Windows reads pictures through a CPU encoder built here with MSVC; the HIP encoder is a
+    separate path (setuphip.py), so setup still leaves images off for `yes`/`gpu`."""
+    def test_cpu_encoder_on_windows(self):
         with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
+            self.assertEqual(setup.hip_vision("cpu"), "cpu")
             self.assertEqual(setup.hip_vision("yes"), "none")
+            self.assertEqual(setup.hip_vision("gpu"), "none")
         with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
             self.assertEqual(setup.hip_vision("cpu"), "cpu")
+            self.assertEqual(setup.hip_vision("yes"), "none")
+
+    def test_the_windows_message_names_the_amd_path(self):
+        msgs = []
+        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda m: msgs.append(m)):
+            setup.hip_vision("gpu")
+        self.assertTrue(any("START-HERE-HIP.bat" in m for m in msgs), msgs)
+
+    def test_the_ready_made_amd_engine_gets_a_cpu_encoder(self):
+        """setup.py's engine step: with the ready-made AMD engine there is no strata-vision in engine\, so the CPU
+        one is compiled and recorded in BUILD.json."""
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            eng = root / "engine"
+            eng.mkdir()
+            (eng / setup.EXE).write_bytes(b"engine")
+            (root / "build-vision" / "bin").mkdir(parents=True)
+            (root / "build-vision" / "bin" / setup.VEXE).write_bytes(b"vision")
+            stamp = eng / "BUILD.json"
+            meta = {"backend": "hip", "source": "prebuilt", "version": "0.1.40.2", "archs": [1201], "vision": "none"}
+            stamp.write_text(json.dumps(meta))
+            vsrc = setup.source_hash(setup.VISION_SOURCES)
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", lambda *a, **k: None), \
+                 mock.patch.object(setup, "say", lambda *a: None), mock.patch.object(setup, "ok", lambda *a: None):
+                out = setup.build_vision_cpu(eng, stamp, meta, "llama", vsrc)
+            self.assertEqual(out, eng)
+            self.assertEqual(json.loads(stamp.read_text())["vision"], "cpu")
+            self.assertTrue((eng / setup.VEXE).exists())
 
 
 class HipRuntimeBesideExe(unittest.TestCase):

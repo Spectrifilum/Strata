@@ -1416,21 +1416,36 @@ def find_vcvars(cuda_v=None):
 
 
 def find_tool(name):
-    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).  A PATH copy that does not run
-    (a pip launcher whose Python is gone) is skipped for the one next to this Python."""
+    """A tool on PATH, or the one pip installed next to this Python (cmake, ninja).  Every candidate is asked for its
+    version and the first one that answers is used.
+
+    #1299: for a wheel whose real binary sits under site-packages (cmake's is `cmake/data/bin/cmake.exe`), the
+    launcher pip writes into Scripts/ records the absolute path of the interpreter it was installed with.  A venv
+    moved to another folder leaves that path dead, and the launcher then exits 1 without saying anything.  A copy on
+    PATH whose Python is gone is a dead launcher of the same kind: it is skipped for the one next to this Python.
+    """
+    ext = ".exe" if WIN else ""
+    cands = []
     p = shutil.which(name)
     if p:
-        try:
-            if subprocess.run([p, "--version"], capture_output=True, timeout=30).returncode == 0:
-                return p
-        except (OSError, subprocess.SubprocessError):
-            pass
+        cands.append(p)
     for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent,
               Path.home() / ".local" / "bin"):
-        c = d / (name + (".exe" if WIN else ""))
-        if c.exists():
-            return str(c)
-    return None
+        c = d / (name + ext)
+        if c.exists() and str(c) not in cands:
+            cands.append(str(c))
+    for d in (Path(sys.executable).parent.parent / "Lib" / "site-packages",
+              Path(sys.executable).parent / "site-packages"):
+        c = d / name / "data" / "bin" / (name + ext)
+        if c.exists() and str(c) not in cands:
+            cands.append(str(c))
+    for c in cands:
+        try:
+            if subprocess.run([c, "--version"], capture_output=True, timeout=15).returncode == 0:
+                return c
+        except OSError:
+            continue
+    return cands[0] if cands else None
 
 
 def free_gb(path):
@@ -2632,7 +2647,7 @@ def hipblaslt_table(arch, lib_dirs, ver=None):
 def build_engine_hip(gpu, llama, vision="none") -> Path:
     """Compile the HIP engine for this AMD GPU into engine/ (again only when its source changed: a `git pull`).
     gpu["archs"]: every architecture it needs code for (the cards of a layer split), else gpu["arch"].  vision "cpu"
-    (#304): the image encoder too, for the CPU (there is no HIP encoder build yet)."""
+    (#304): the image encoder too, for the CPU - setup never builds a HIP one (docs/AMD_HIP.md has that command)."""
     eng = ROOT / "engine"
     eng.mkdir(exist_ok=True)
     stamp = eng / "BUILD.json"
@@ -2682,15 +2697,14 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
 
 
 def hip_vision(asked) -> str:
-    """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304); a HIP (GPU) encoder build
-    is a later step, so `yes`/`gpu` leave images off, as before, and say how to get them."""
+    """The image encoder with the AMD backend (--vision): the CPU one when asked for (#304).  On Windows the CPU
+    encoder is compiled here with MSVC (tools/vision without CUDA, build_vision_cpu below); a HIP (GPU) encoder is
+    a separate path (setuphip.py / START-HERE-HIP.bat, docs/AMD_HIP.md), so setup still leaves images off for
+    `yes`/`gpu` and says both ways."""
     if asked in ("yes", "gpu"):
-        warn("the AMD backend has no GPU image encoder yet: images off"
-             + ("" if WIN else " (--vision cpu reads them on the CPU)"))
-    if asked == "cpu" and WIN:
-        warn("images on the CPU with an AMD card are Linux-only for now (the ready-made Windows AMD engine has no "
-             "image encoder): images off")
-        return "none"
+        warn("the AMD backend has no GPU image encoder in setup yet: images off"
+             + (" (START-HERE-HIP.bat builds one, on the card or with --vision cpu on the CPU: docs/AMD_HIP.md)" if WIN
+                else " (--vision cpu reads them on the CPU; a HIP encoder can be built by hand: docs/AMD_HIP.md)"))
     return "cpu" if asked == "cpu" else "none"
 
 
@@ -5455,6 +5469,11 @@ def main() -> int:
     if eng is None:
         eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
     meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+    if hip and WIN and vision != "none":               # the ready-made AMD engine carries no encoder: build the CPU one
+        vsrc = source_hash(VISION_SOURCES)
+        if not ((eng / VEXE).exists() and meta.get("vision_src") == vsrc):
+            eng = build_vision_cpu(eng, eng / "BUILD.json", meta, llama, vsrc)
+            meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
     else:
