@@ -3886,6 +3886,21 @@ SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_RESIDENT_PIN", "STRATA
 SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "threads"})
 
 
+def remembered_vision(tag: str) -> str | None:
+    """#1299: the image mode the config of this model already has ("gpu" or "cpu"), so a setup run again does not
+    quietly take the pictures away from a model that could read them."""
+    p = ROOT / f"strata-{tag.lower()}.json"
+    if not p.is_file():
+        return None
+    try:
+        vis = json.loads(p.read_text(encoding="utf-8-sig")).get("vision")
+    except (OSError, ValueError):
+        return None
+    if isinstance(vis, dict) and vis.get("exe"):
+        return "gpu" if vis.get("gpu") is not None else "cpu"
+    return None
+
+
 def carry_over(old: dict, cfg: dict) -> list[str]:
     """#629: setup run again for an installed model keeps what the user added to its run config: every key setup does
     not write (`SETUP_KEYS`), the "env" entries setup does not write, and in "vision" the keys setup does not write
@@ -5023,7 +5038,7 @@ def main() -> int:
             + "   (recommended)")
         say("  2) AMD: " + ", ".join(f"{g['name']} ({g['vram_gb']:.0f} GB{', unified memory' if g.get('uma') else ''})"
                                for g in amd_ok)
-            + f"   ({'the ready-made AMD engine, no images' if WIN else 'compiled here, images on the CPU'}"
+            + f"   ({'the ready-made AMD engine, images on the CPU' if WIN else 'compiled here, images on the CPU'}"
               " - docs/AMD_HIP.md)")
         hip = ask("Which cards?", ["1", "2"], "1", a.yes or a.check) == "2"
         if a.check and not hip:
@@ -5330,6 +5345,11 @@ def main() -> int:
         if a.vision not in (None, "no", "none"):
             warn(f"images are not available with {model} yet: off")
     elif hip:
+        if a.vision is None:                          # #1299: setup run again keeps the images this model already has
+            kept = remembered_vision(tag)
+            if kept:
+                a.vision = kept
+                ok(f"images: kept as this model was set up ({'on the GPU' if kept == 'gpu' else 'on the CPU'})")
         vision = hip_vision(a.vision)
     elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
