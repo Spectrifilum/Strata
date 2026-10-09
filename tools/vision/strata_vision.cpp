@@ -13,6 +13,10 @@
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+//
+// Nothing here is GPU-specific: --gpu asks ggml for a backend, and the build decides which one there is -
+// -DSTRATA_VISION_CUDA (CUDA) or -DSTRATA_VISION_HIP (ROCm; tools/vision/build_windows_hip.bat, docs/AMD_HIP.md).
+// Only the "hide the card on the CPU" switch below is named per backend.
 #include "ggml-cpu.h"
 #include "gguf.h"
 #include "llama.h"
@@ -85,17 +89,29 @@ int main(int argc, char** argv) {
                              "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
         return 2;
     }
-    // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
-    // 150-260 expert slots less for the engine beside it).  Before anything reaches the CUDA runtime.
+    // On the CPU the GPU stays unseen: a GPU build otherwise opens a context there (measured on CUDA: 0.4-0.7 GB of
+    // VRAM, 150-260 expert slots less for the engine beside it).  Before anything reaches the GPU runtime.  The
+    // "see no card" switch is per backend, and the wrong name is silent: CUDA_VISIBLE_DEVICES does nothing to a HIP
+    // build, and HIP_VISIBLE_DEVICES=-1 does make ROCm report no device (measured with ROCm 10.0 on gfx1201: hipInfo
+    // stops at "no ROCm-capable device is detected"), which is what the CUDA case relies on.  ROCR_VISIBLE_DEVICES
+    // does not: with "-1" the card is still listed, so it is left alone here.
     if (!gpu) {
 #ifdef _WIN32
         _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+        _putenv_s("HIP_VISIBLE_DEVICES", "-1");
 #else
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+        setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
     }
-    llama_log_set(quiet_log, nullptr);
-    mtmd_helper_log_set(quiet_log, nullptr);
+    // STRATA_VISION_DEBUG=1 keeps llama.cpp's and mtmd's own logs instead of quieting them.  A GPU backend can die
+    // during the encoder's start-up, and those logs are the only thing that says how far it got.
+    if (!std::getenv("STRATA_VISION_DEBUG")) {
+        llama_log_set(quiet_log, nullptr);
+        mtmd_helper_log_set(quiet_log, nullptr);
+    } else {
+        std::fprintf(stderr, "strata-vision: STRATA_VISION_DEBUG is set, llama.cpp/mtmd logs stay on\n");
+    }
     llama_backend_init();
 
     const auto load_t0 = std::chrono::steady_clock::now();
