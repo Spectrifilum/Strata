@@ -3930,8 +3930,8 @@ SETUP_VISION = frozenset({"exe", "mmproj", "model", "gpu", "max_tokens", "thread
 
 
 def remembered_vision(tag: str) -> str | None:
-    """#1299: the image mode the config of this model already has ("gpu" or "cpu"), so a setup run again does not
-    quietly take the pictures away from a model that could read them."""
+    """The image mode this model's own config already has ("cpu", "gpu" or None), so a setup run again does not take
+    the pictures away from a model that could read them: without --vision, hip_vision answers "none" (#1299)."""
     p = ROOT / f"strata-{tag.lower()}.json"
     if not p.is_file():
         return None
@@ -5388,18 +5388,18 @@ def main() -> int:
         if a.vision not in (None, "no", "none"):
             warn(f"images are not available with {model} yet: off")
     elif hip:
-        if a.vision is None:                          # #1299: setup run again keeps the images this model already has
-            kept = remembered_vision(tag)
-            if kept:
-                a.vision = kept
-                ok(f"images: kept as this model was set up ({'on the GPU' if kept == 'gpu' else 'on the CPU'})")
         vision = hip_vision(a.vision)
-        if WIN and a.vision is None:
-            say()
-            say("  Images: the model can also read pictures (0.9 GB download; the image encoder is compiled here once,")
-            say("  which needs the Visual Studio C++ build tools).  1) no   2) on the CPU (about 10-30 s per picture,")
-            say("  nothing else to install)   3) on the GPU through Vulkan (fast; needs the Vulkan SDK to compile)")
-            vision = {"1": "none", "2": "cpu", "3": "gpu"}[ask("Images?", ["1", "2", "3"], "1", a.yes)]
+        if a.vision is None:
+            kept = remembered_vision(tag)              # setup run again: keep the images this model already has
+            if kept:
+                vision = kept
+                ok(f"images: kept as this model was set up ({'on the GPU' if kept == 'gpu' else 'on the CPU'})")
+            elif WIN:
+                say()
+                say("  Images: the model can also read pictures (0.9 GB download; the image encoder is compiled here once,")
+                say("  which needs the Visual Studio C++ build tools).  1) no   2) on the CPU (about 10-30 s per picture,")
+                say("  nothing else to install)   3) on the GPU through Vulkan (fast; needs the Vulkan SDK to compile)")
+                vision = {"1": "none", "2": "cpu", "3": "gpu"}[ask("Images?", ["1", "2", "3"], "1", a.yes)]
     elif a.vision:
         vision = {"yes": "gpu", "no": "none"}.get(a.vision, a.vision)
     else:
