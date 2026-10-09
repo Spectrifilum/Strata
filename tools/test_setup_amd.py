@@ -553,5 +553,33 @@ class TdrPointer(unittest.TestCase):
             self.assertIn(env, (Path(setup.__file__).resolve().parent / "src/prefill/prefill.cpp").read_text(encoding="utf-8"))
 
 
+class VisionChoice(unittest.TestCase):
+    """#1299: which image encoder an AMD setup picks, and what a setup run again remembers."""
+
+    def test_hip_vision_answers(self):
+        self.assertEqual(setup.hip_vision(None), "none")           # nothing asked: no pictures
+        self.assertEqual(setup.hip_vision("no"), "none")
+        self.assertEqual(setup.hip_vision("none"), "none")
+        self.assertEqual(setup.hip_vision("cpu"), "cpu")           # the encoder built with MSVC
+        self.assertEqual(setup.hip_vision("yes"), "none")          # setup has no HIP encoder: it says so
+        self.assertEqual(setup.hip_vision("gpu"), "none")
+
+    def test_a_model_that_has_images_keeps_them(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            with mock.patch.object(setup, "ROOT", root):
+                self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))   # no config yet
+                (root / "strata-qwen3.8-flash-next-ud.json").write_text(json.dumps(
+                    {"args": [], "vision": {"exe": "engine\\strata-vision.exe", "mmproj": "models\\mmproj.gguf"}}),
+                    encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")
+                (root / "strata-qwen3.8-flash-next-ud.json").write_text(json.dumps(
+                    {"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": 0}}), encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "gpu")   # GPU 0 is still a GPU
+                (root / "strata-qwen3.8-flash-next-ud.json").write_text(json.dumps({"args": []}), encoding="utf-8")
+                self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))    # images were off
+
+
 if __name__ == "__main__":
     unittest.main()
