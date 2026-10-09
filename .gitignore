@@ -45,6 +45,11 @@ td.log
 build-vision*/
 build-vision.bat
 build-vision-cuda12.bat
+build-vision-cpu.bat
+
+# the AMD image path (setuphip.py / START-HERE-HIP.bat): its program, the config and the log it writes
+/engine-hip/
+/*-hip.json
 
 # setup.py outputs (engine, downloads) and release builds
 /engine/
