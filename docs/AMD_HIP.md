@@ -49,9 +49,9 @@ the kernel's amdgpu driver (no ROCm install needed):
   architectures above; the engine is compiled for each of them (cards of two families, e.g. gfx1100 + gfx1201, need
   a system ROCm 7: AMD's wheels hold one family). A split pays only when no single card holds the model's experts
   (see RDNA4 below).
-- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32). Setup does not offer the tuning
-  (calibration) on AMD yet: its controls are being checked on HIP one at a time (#566). Since 0.1.39 a tuning run by
-  hand (`./setup.sh --calibrate`) is saved for the AMD card it ran on and reused when setup runs again. The Monitor
+- **Limits for now:** images only through the CPU encoder (`--vision cpu`, 0.1.32; an AMD GPU encoder builds now but
+  setup does not build it, see [Images: the encoder on an AMD card](#images-the-encoder-on-an-amd-card)), no
+  calibration. The Monitor
   shows the card's load, VRAM, temperature and power from Linux sysfs (0.1.32).
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
@@ -82,8 +82,10 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
-- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** no images yet (the CPU image encoder is Linux-only for
-  now), one card per model (`--gpus` is Linux-only for now), no calibration.
+- **Differences from Windows-on-NVIDIA and Linux-on-AMD:** images through the CPU encoder only (`--vision cpu`,
+  compiled here with Visual Studio's C++ tools; an encoder built for the AMD card is a separate path, see
+  [Images: the encoder on an AMD card](#images-the-encoder-on-an-amd-card)), one card per model (`--gpus` is
+  Linux-only for now), no calibration.
 - Two Windows-only engine details (#247, #325): hipBLAS can return success and still leave `hipErrorInvalidValue`
   set after some BF16/FP16 GEMMs (seen on gfx1201); the engine clears that one stale error after a GEMM that
   succeeded, on Windows only. `hipHostGetDevicePointer` returns the host pointer itself on Windows: kernels read
@@ -152,6 +154,125 @@ Native IQ experts are enabled by default. CMake fetches the llama.cpp revision
 pinned by this repository. For an offline build, point `STRATA_GGML_DIR` at a
 checkout of that exact revision; using an arbitrary newer checkout changes the
 dependency being tested.
+
+## Images: the encoder on an AMD card
+
+The image encoder is one program, `strata-vision` (`tools/vision/`: llama.cpp's `mtmd` on top of ggml, see
+[Images](DETAILS.md#images-vision)). There is no AMD version of it to write: the NVIDIA build compiles ggml's CUDA
+backend, and an AMD build compiles those same `ggml-cuda` sources for HIP - `-DSTRATA_VISION_HIP=ON` instead of
+`-DSTRATA_VISION_CUDA=ON`. What porting it is the compiler and the card, so that is what the CMake file pins: the
+architecture comes from ROCm's `amdgpu-arch` (or from `-DGPU_TARGETS=`), and since ROCm's HIP runtime and hipBLAS
+are shared libraries that build links llama/ggml shared and leaves their `.dll`/`.so` files next to the program.
+
+**Not in setup:** `setup.py` does not build the HIP encoder, and it is not in the ready-made engine.  What setup does
+build on Windows is the CPU encoder (`--vision cpu`), with MSVC: no ROCm and no AMD GPU are needed for that, and on
+an RX 9070 (gfx1201) PC it read a 1,024-token picture in 13 s with 16 threads (issue #1299).
+
+**The engine has to be told to take images too.** A prompt that carries image embeddings is refused with
+`this engine was started without --vision` unless the engine was started with that flag
+(`src/program/generate.cpp`), and a model config written with images off has no such flag in its `args`. The first
+run of this path died there: the encoder started, the banner said `images on`, and the first picture came back as an
+error with 0 tokens. `setuphip.py` now appends `--vision --vram-reserve-mib 700` to the args it copies, the same rule
+`setup.py` uses for its own vision configs, and says that it added them.
+
+**What it takes to run on Windows:** the program has to sit next to the HIP runtime of the ROCm it was compiled
+with. Windows looks in the program's own folder, then in `C:\Windows\System32`, and only then on the `PATH`, so the
+AMD driver's `amdhip64_7.dll` is found before any `lib_dirs` the server adds - and a runtime that does not match
+the compiler faults on the first host-to-device copy. Measured on gfx1201: an access violation (0xC0000005) inside
+`ggml_backend_cuda_buffer_set_tensor` while it loaded the vision weights, with no message of its own, after
+`hipMalloc` had already succeeded - which is why it looks like a memory problem and is not one. The encoder's
+CMake copies that runtime's DLL next to the program, the same reason the engine ships its own (#468 #461).
+hipBLAS and rocBLAS, with their per-card kernel data, read that data from next to their own DLLs, so
+`setuphip.py` reuses the engine's `engine\rocm\bin` when it has them (measured working) and only copies them from
+the build's ROCm - hundreds of MB per card - when it does not.
+
+**Measured on gfx1201 by the reporter of #1299.** A 640x480 picture (300 image tokens, grid 20x15) and a 1200x900
+one scaled to the 1,024-token cap (972 tokens, grid 36x27), read by the same build on the same PC, with the engine
+running on the card:
+
+| picture | the CPU encoder, 12 threads | this encoder with `--gpu` |
+| --- | --- | --- |
+| 300 image tokens | **1.9-2.0 s** | **4.4 s** (four runs: 4369, 4372, 4376, 4393 ms) |
+| 972 image tokens | **8.5 s** | **19.3 s** |
+
+So on that PC the card path is the slower of the two, and it takes ~1 GB of VRAM for it. Repeating an encode changes
+the time by under 2%, so it is not noise, and starting the process takes 1.3 s on the CPU path, 22 s on the card
+path (0.9 GB of projector plus the 1,024-token warm-up).
+
+Why it is slow is not established. One clue, worth taking upstream: the two paths produce **byte-identical** output
+for the same picture - 3,072,020 bytes at 300 tokens, 9,953,300 at 972, cosine 1.000000, largest difference 0 -
+while the weights do go to the card (`allocating 334 tensors (865 MiB) on buft ROCm0`). Arithmetic that agrees bit
+for bit between CPU and GPU means the arithmetic is not happening on the card; the next step is to read what
+`ggml_backend_sched` decides for this graph (`ggml_backend_cuda_device_supports_op`). Measuring the card from a
+separate process does not help: `hipMemGetInfo` there answers 32 472 of 32 624 MiB free whether or not the engine
+and the encoder are holding gigabytes - which is also why llama.cpp's own `get_memory` comes back 0 on Windows.
+
+**What the encoder takes on the card** comes from the model's own log instead: the engine prints
+`expert cache auto: … free` and, once loaded, `… MiB of VRAM free with everything loaded`. Compare that second line
+with the same one from a run without images - the encoder is started before the engine on purpose, so the difference
+is its footprint.
+
+**One step, on Windows: `START-HERE-HIP.bat`.** It builds the encoder as below, copies it and its libraries into
+`engine-hip\`, and writes a second server config (`strata-<model>-hip.json`) and start script
+(`run-<model>-hip.bat`) that use it, on **the model's own port** - the number its clients are already configured
+for, so moving a PC to images changes which script you start, not what the apps point at. The two paths take turns:
+only one of them can hold that port, and only one engine fits in the RAM. `--port` gives this path another number if
+you want both. It reads `engine\` and the model's config and writes neither, so the path that is already running
+stays exactly as it was: `engine-hip\`, `strata-<model>-hip.json` and `run-<model>-hip.bat` are all it adds, and
+deleting those three goes back.
+`setuphip.py` is the same steps with the arguments written out (`--config`, `--rocm`, `--archs`, `--rebuild`,
+`--vision gpu|cpu`, `--run`), and `setuphip.bat` re-runs it. `--vision cpu` keeps the encoder off the card - the
+same program started without `--gpu`, so the whole card stays to the engine; on the PC measured above that is the
+faster of the two today. **Those options belong to `setuphip.py`, not to the start script it writes**: the server has
+no `--vision` flag, the mode is the `"gpu"` key of `strata-<model>-hip.json`, and `run-<model>-hip.bat` says so out
+loud if it is given an argument ("Starting as configured now: pictures on the cpu"). It takes the model from the
+`strata-<model>.json` that setup.py wrote, and a config named otherwise is passed with `--config`.
+
+Just the build, with no config and no start script:
+
+```bat
+tools\vision\build_windows_hip.bat            REM build-vision-hip\bin\strata-vision.exe
+tools\vision\build_windows_hip.bat install    REM and a copy of it and its libraries in engine-hip\
+```
+
+It needs a ROCm install with a compiler - a full SDK, or the one `tools\hip\build_windows.bat` keeps in `.rocm-win`;
+not the ready-made engine's `engine\rocm\bin`, which has runtime DLLs and no compiler - and Visual Studio Build
+Tools with the C++ workload. Measured with ROCm 10.0.0rc4 for gfx1201 on a 24-thread desktop that was running the
+engine at the time: 275 targets, 143 of them `ggml-cuda` files, 37 minutes from the start of that script to
+`bin\strata-vision.exe`.
+
+On Windows the C++ compiler is ROCm's own clang (CMake does not pair `cl.exe` with a HIP device compiler, and
+llama.cpp hands its `.cu` files to the C++ compiler with `-x hip`), which takes the headers and the linker from
+`vcvars64.bat`. A recent MSVC toolset does not work, and the script tries a compile instead of trusting version
+numbers: `<cmath>` of MSVC 14.51 (Visual Studio 18) declares `isgreater` and friends as host+device builtins, and
+the `__device__` overloads of ROCm's HIP headers cannot overload those - every `ggml-cuda` file then fails with
+twenty errors that say nothing about ggml. The 14.44 toolset of Build Tools 2022 compiles the same line, and it is
+the toolset [Windows](#windows) above asks for. The script compiles that one line with each installed toolset and
+builds with the first that passes.
+
+Linux (the same option; only the Windows build was made there, so treat these lines as the intended command):
+`<llama>` a llama.cpp checkout at the pinned commit, `<rocm>` the ROCm install:
+
+```sh
+cmake -S tools/vision -B build-vision-hip -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DLLAMA_DIR=<llama> -DSTRATA_VISION_HIP=ON -DROCM_ROOT=<rocm>
+cmake --build build-vision-hip --target strata-vision
+```
+
+To try one by hand, put ROCm's `bin` on the `PATH` (the server already does that for the engine and the encoder
+through the config's `lib_dirs`) and run `engine-hip\strata-vision.exe --mmproj <mmproj.gguf> --model <first shard>
+--gpu`; it answers `READY <n_embd>` and takes `ENC <picture> <out>` lines. In the server, the same thing happens by
+putting a `vision` section in a copy of the model's config, which is what `setuphip.py` writes. Without `--gpu` it
+keeps the card to itself as it does on NVIDIA; that switch is named per backend, so it sets
+`CUDA_VISIBLE_DEVICES=-1` and `HIP_VISIBLE_DEVICES=-1` - measured on ROCm 10.0 with gfx1201, `HIP_VISIBLE_DEVICES=-1`
+leaves ROCm reporting "no ROCm-capable device is detected", while `ROCR_VISIBLE_DEVICES=-1` leaves the card in the
+list, so it is not used.
+
+**A CPU build on Windows needs its architecture named.** With Ninja and MSVC, CMake leaves
+`CMAKE_SYSTEM_PROCESSOR` empty, and ggml then prints "Unknown CPU architecture. Falling back to generic
+implementations." and builds the quant kernels without AVX2. Measured on this PC (Ryzen, MSVC 14.44, CMake 4.4.3):
+the same 1,024-token picture took over 300 s with the generic kernels and 13 s with the AVX2 ones. `tools/vision/CMakeLists.txt`
+now sets it to AMD64 when the generator did not.
 
 ## Model and serving configuration
 

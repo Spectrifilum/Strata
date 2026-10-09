@@ -1318,6 +1318,17 @@ like `nvidia-smi`) to the `"vision"` section of `strata-<model>.json`: the encod
 `--vram-reserve-mib` in `"args"` to 700 as well, so the engine's cards keep that VRAM for the expert cache. The
 encoder's card needs code in the ready-made encoder (RTX 20/30/40/50).
 
+**An AMD card:** setup keeps the encoder on the CPU there (`--vision cpu`, compiled with Visual Studio's C++ tools).
+The same encoder compiled for ROCm is a separate path: `START-HERE-HIP.bat` builds it, puts it in `engine-hip\`, and
+writes `strata-<model>-hip.json` and `run-<model>-hip.bat` that use it on **the model's own port**, so clients are
+unchanged - the two paths take turns, they cannot both run; `--port` moves one. `engine\` and the model's own config
+are only read, so the path already running is untouched. `--vision gpu|cpu` on that path chooses where pictures are
+read. Measured on gfx1201 by the reporter of #1299, with the engine on the card: 300 image tokens in 4.4 s on the
+card, 1.9 s on 12 CPU threads; 972 tokens in 19.3 s on the card, 8.5 s on the CPU - the card path is the slower one
+there, and both paths return byte-identical embeddings for the same picture, which says the arithmetic is not
+reaching the card. Its run through the server and its VRAM on AMD are still open -
+[AMD_HIP.md](AMD_HIP.md), "Images: the encoder on an AMD card".
+
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
@@ -1501,7 +1512,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | --- | --- |
 | `the NVIDIA driver is too old` | Update the driver (NVIDIA App or nvidia.com/drivers), restart, run `START-HERE.bat` again. |
 | Python or the build tools could not be installed | Install what it names (links are printed), then run it again. Everything already done is kept. |
-| `port 8080 is already in use` | Strata is already running (look for its window), or another program uses the port: `START-HERE.bat --port 8081`. |
+| `port 8080 is already in use` | Strata is already running (look for its window), or the other path of it is (`run-<model>-hip.bat` takes the same port - the two take turns), or another program uses the port: `START-HERE.bat --port 8081`. |
 | `cudaHostRegister ... out of memory` in the log | Normal on Windows: the engine pins the experts in per-layer slices instead. Only a problem if the load then fails. |
 | `ExpertCache: cudaMalloc(...) failed: out of memory` although VRAM is free | Windows' page file is off or tiny: every allocation on the graphics card is also charged to Windows' commit (RAM + page file). Set the page file to "System managed" (System > About > Advanced system settings > Performance > Advanced > Virtual memory) and restart. Since 0.1.19 the engine retries with a smaller cache instead of stopping, and setup warns about a page file under 4 GB (issue #60). |
 | The first start takes minutes | It is reading 34-55 GB into RAM; the second start is faster while the files are in the OS cache. |
@@ -1514,7 +1525,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
 | Setup puts the model on an old drive after you moved or reinstalled Strata (#1070) | Setup remembers the data folder you used last in its settings file (`%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on Linux; the `data_dir` entry) and uses it again. Choose another place with `--data-dir DIR` (model files, packs, MTP layer) or `--models-dir DIR` (the GGUF files only), or delete the `data_dir` line; `--gguf-dir DIR` uses GGUF files you already have without copying. To move a model, copy its folder and run setup with the new `--data-dir`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
-| Pictures are slow (3-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |
+| Pictures are slow (3-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). On an AMD card the GPU encoder is a separate path: `START-HERE-HIP.bat`. |
 | A request never finishes: "reading the prompt", GPU "100%" at low power | The GPU ran out of VRAM (engines before 0.1.9 could end with ~30 MiB free at large contexts). Run `START-HERE.bat` once to get engine 0.1.9 or newer; the log then says `... MiB of VRAM free with everything loaded` (a few hundred) and names the `--vram-reserve-mib` to add if it is low. |
 | Output much slower than the tables above, only with a large `--context`, and the start says a small `... MiB of VRAM free with everything loaded` | The expert cache does not fit the card at that context. With `--expert-cache auto` the engine shrinks it to fit; with a fixed number it does not check again after the slots are written, and on Windows the extra is put in system memory instead of failing, so only the speed shows it. Use `auto`, a smaller number, or raise `--vram-reserve-mib` (it is deducted before the cache is sized). See "The expert cache size is a budget" under Sharing the GPU. |
 | Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`STRATA_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
