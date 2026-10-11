@@ -617,15 +617,16 @@ class TdrPointer(unittest.TestCase):
 
 
 class VisionChoice(unittest.TestCase):
-    """#1299: which image encoder an AMD setup picks, and what a setup run again remembers."""
+    """#1299: which image encoder an AMD setup picks (the CPU one, or the GPU one compiled with Vulkan), and what a
+    setup run again remembers."""
 
     def test_hip_vision_answers(self):
         self.assertEqual(setup.hip_vision(None), "none")           # nothing asked: no pictures
         self.assertEqual(setup.hip_vision("no"), "none")
         self.assertEqual(setup.hip_vision("none"), "none")
         self.assertEqual(setup.hip_vision("cpu"), "cpu")           # the encoder built with MSVC
-        self.assertEqual(setup.hip_vision("yes"), "none")          # setup has no HIP encoder: it says so
-        self.assertEqual(setup.hip_vision("gpu"), "none")
+        self.assertEqual(setup.hip_vision("yes"), "gpu")           # the encoder compiled with Vulkan (#1299)
+        self.assertEqual(setup.hip_vision("gpu"), "gpu")
 
     def test_a_model_that_has_images_keeps_them(self):
         import json

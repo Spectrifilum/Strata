@@ -5540,11 +5540,6 @@ def main() -> int:
     if eng is None:
         eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
     meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
-    if hip and WIN and vision != "none":               # the ready-made AMD engine carries no encoder: build the CPU one
-        vsrc = source_hash(VISION_SOURCES)
-        if not ((eng / VEXE).exists() and meta.get("vision_src") == vsrc):
-            eng = build_vision_cpu(eng, eng / "BUILD.json", meta, llama, vsrc)
-            meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
     else:
