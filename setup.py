@@ -3940,7 +3940,9 @@ def remembered_vision(tag: str) -> str | None:
     except (OSError, ValueError):
         return None
     if isinstance(vis, dict) and vis.get("exe"):
-        return "gpu" if vis.get("gpu") is not None else "cpu"
+        g = vis.get("gpu")
+        # "gpu": false is the CPU encoder; "gpu": 0 is card number zero, and GPU 0 is still a GPU (#1299).
+        return "gpu" if (g is not None and g is not False) else "cpu"
     return None
 
 

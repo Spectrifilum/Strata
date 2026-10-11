@@ -501,6 +501,9 @@ class RememberedVision(unittest.TestCase):
                 cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": 0}}),
                                encoding="utf-8")
                 self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "gpu")   # GPU 0 is still a GPU
+                cfg.write_text(json.dumps({"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": False}}),
+                               encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")    # false: the CPU encoder
                 cfg.write_text(json.dumps({"args": []}), encoding="utf-8")
                 self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))         # images were off
 
@@ -641,6 +644,9 @@ class VisionChoice(unittest.TestCase):
                 (root / "strata-qwen3.8-flash-next-ud.json").write_text(json.dumps(
                     {"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": 0}}), encoding="utf-8")
                 self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "gpu")   # GPU 0 is still a GPU
+                (root / "strata-qwen3.8-flash-next-ud.json").write_text(json.dumps(
+                    {"args": [], "vision": {"exe": "engine\\strata-vision.exe", "gpu": False}}), encoding="utf-8")
+                self.assertEqual(setup.remembered_vision("Qwen3.8-Flash-Next-UD"), "cpu")    # false: the CPU encoder
                 (root / "strata-qwen3.8-flash-next-ud.json").write_text(json.dumps({"args": []}), encoding="utf-8")
                 self.assertIsNone(setup.remembered_vision("Qwen3.8-Flash-Next-UD"))    # images were off
 
